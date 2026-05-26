@@ -54,28 +54,6 @@ Required. Bearer token used for the Nairi public API.
 export NAIRI_API_KEY="..."
 ```
 
-### `NAIRI_BASE_URL`
-
-Optional. Defaults to `https://api.nairi.ai`.
-
-You may set either the root host or the full public API prefix:
-
-```bash
-export NAIRI_BASE_URL="https://api.nairi.ai"
-# or
-export NAIRI_BASE_URL="https://api.nairi.ai/api/public/v1"
-```
-
-### `NAIRI_MAX_FILE_ATTACHMENT_BYTES`
-
-Optional. Defaults to `200000`.
-
-When a prompt contains local file references like `@README.md`, the extension reads those files and appends their contents to the prompt sent to Nairi. Files larger than this limit are omitted with a notice.
-
-```bash
-export NAIRI_MAX_FILE_ATTACHMENT_BYTES=500000
-```
-
 ## Usage
 
 ### Select a Nairi model
@@ -119,7 +97,7 @@ Notes:
 - Relative paths resolve from pi's current working directory.
 - Directories and missing files are skipped.
 - Binary files are omitted.
-- Large files are omitted according to `NAIRI_MAX_FILE_ATTACHMENT_BYTES`.
+- Very large files are omitted with a notice.
 
 ### Reset the remote conversation
 
