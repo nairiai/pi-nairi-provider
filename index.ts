@@ -422,7 +422,7 @@ function formatToolProgress(data: Record<string, unknown>, progressType: string)
 	const lines = [`${escapeMarkdown(toolName)}${heartbeatSuffix}${statusSuffix}${summary ? ` — ${escapeMarkdown(summary)}` : ""}`];
 	const toolInput = stringField(data, "tool_input");
 	if (toolInput) {
-		lines.push(`  → ${inlineCode(truncateText(singleLine(toolInput), 180))}`);
+		lines.push(escapeMarkdown(truncateText(singleLine(toolInput), 180)));
 	}
 
 	const toolOutput = stringField(data, "tool_output");
