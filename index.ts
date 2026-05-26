@@ -372,18 +372,18 @@ function formatProgressMessage(data: unknown, rawContent: string): string {
 	}
 
 	if (progressType === "step") {
-		return quoteProgressLine(`🧭 ${progressSummary(data, "step")}`);
+		return quoteProgressLine(`step: ${progressSummary(data, "step")}`);
 	}
 
 	if (progressType === "subagent") {
-		return quoteProgressLine(`👥 ${progressSummary(data, "subagent")}`);
+		return quoteProgressLine(`subagent: ${progressSummary(data, "subagent")}`);
 	}
 
 	if (progressType === "thinking") {
-		return quoteProgressLine(`💭 ${progressSummary(data, "thinking")}`);
+		return quoteProgressLine(`thinking: ${progressSummary(data, "thinking")}`);
 	}
 
-	return quoteProgressLine(`• ${progressType}: ${truncateText(singleLine(JSON.stringify(data)), 220)}`);
+	return quoteProgressLine(`${progressType}: ${truncateText(singleLine(JSON.stringify(data)), 220)}`);
 }
 
 function formatToolProgress(data: Record<string, unknown>, progressType: string): string {
@@ -392,15 +392,15 @@ function formatToolProgress(data: Record<string, unknown>, progressType: string)
 	const summary = stringField(data, "summary");
 	const statusSuffix = toolStatus ? ` ${inlineCode(toolStatus)}` : "";
 	const heartbeatSuffix = progressType === "tool_heartbeat" ? " heartbeat" : "";
-	const lines = [`🔧 ${escapeMarkdown(toolName)}${heartbeatSuffix}${statusSuffix}${summary ? ` — ${escapeMarkdown(summary)}` : ""}`];
+	const lines = [`${escapeMarkdown(toolName)}${heartbeatSuffix}${statusSuffix}${summary ? ` — ${escapeMarkdown(summary)}` : ""}`];
 	const toolInput = stringField(data, "tool_input");
 	if (toolInput) {
-		lines.push(`input: ${inlineCode(truncateText(singleLine(toolInput), 180))}`);
+		lines.push(`  → ${inlineCode(truncateText(singleLine(toolInput), 180))}`);
 	}
 
 	const toolOutput = stringField(data, "tool_output");
 	if (toolOutput) {
-		lines.push(`output: ${escapeMarkdown(truncateText(singleLine(toolOutput), 220))}`);
+		lines.push(`  → ${escapeMarkdown(truncateText(singleLine(toolOutput), 220))}`);
 	}
 
 	return quoteProgressLines(lines);
