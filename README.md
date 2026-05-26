@@ -13,7 +13,6 @@ This extension discovers your deployed Nairi agents, registers each one as a pi 
 - Shows Nairi progress messages while the agent works
 - Persists the Nairi `job_id` per pi session and agent
 - Supports `/nairi-reset` to start a fresh Nairi conversation
-- Expands local `@file` references into prompt attachments
 - Blocks pi fork/tree navigation for Nairi sessions to avoid mismatched remote conversation state
 
 ## Requirements
@@ -69,35 +68,6 @@ Summarize the current repository and suggest next steps.
 ```
 
 The extension sends only the latest user prompt to Nairi, then polls the Nairi API until the turn completes. Progress messages are rendered in pi as they arrive.
-
-### Attach local files with `@file`
-
-Nairi's public API accepts a string `prompt`, not multipart file uploads. To make file references feel native in pi, this extension expands local file references before sending the prompt.
-
-Examples:
-
-```text
-Review @README.md
-```
-
-```text
-Compare @src/index.ts with @"docs/design notes.md"
-```
-
-Supported forms:
-
-- `@relative/path.txt`
-- `@/absolute/path.txt`
-- `@~/path.txt`
-- `@"path with spaces.txt"`
-- `@'path with spaces.txt'`
-
-Notes:
-
-- Relative paths resolve from pi's current working directory.
-- Directories and missing files are skipped.
-- Binary files are omitted.
-- Very large files are omitted with a notice.
 
 ### Reset the remote conversation
 
@@ -172,7 +142,6 @@ Then reload pi:
 ## Security notes
 
 - Do not commit `NAIRI_API_KEY`.
-- Referenced local files are read from your machine and included in the prompt sent to Nairi.
 - The extension does not upload binary/image files; image content in pi messages is replaced with a text placeholder.
 
 ## License
