@@ -1,8 +1,8 @@
 # pi Nairi provider
 
-Use Nairi agents as models inside the [pi coding agent](https://github.com/earendil-works/pi-coding-agent).
+Use [Nairi](https://nairi.ai) agents as models inside the [pi coding agent](https://github.com/earendil-works/pi-coding-agent).
 
-This extension discovers your deployed Nairi agents, registers each one as a pi model, forwards prompts through the Nairi public Conversations API, streams Nairi progress events into pi, and preserves the Nairi conversation per pi session.
+This extension discovers your deployed [Nairi](https://nairi.ai) agents, registers each one as a pi model, forwards prompts through the [Nairi public Conversations API](https://nairi.ai/docs/api/conversations/overview), streams Nairi progress events into pi, and preserves the Nairi conversation per pi session.
 
 ## Features
 
@@ -79,7 +79,7 @@ The extension keeps a Nairi conversation per pi session and model. To start fres
 
 ## How it works
 
-At startup the extension calls:
+At startup the extension calls Nairi's [list agents](https://nairi.ai/docs/api/agents/list) endpoint:
 
 ```http
 GET /api/public/v1/agents
@@ -87,25 +87,25 @@ GET /api/public/v1/agents
 
 For each returned agent, it registers a pi model under the `nairi` provider.
 
-For the first prompt in a pi session/model pair, it calls:
+For the first prompt in a pi session/model pair, it calls Nairi's [start conversation](https://nairi.ai/docs/api/conversations/start) endpoint:
 
 ```http
 POST /api/public/v1/conversations/start
 ```
 
-For follow-up prompts, it calls:
+For follow-up prompts, it calls Nairi's [continue conversation](https://nairi.ai/docs/api/conversations/continue) endpoint:
 
 ```http
 POST /api/public/v1/conversations/{job_id}/continue
 ```
 
-It polls the current user message with:
+It polls the current user message with Nairi's [message status endpoint](https://nairi.ai/docs/api/conversations/message-reference):
 
 ```http
 GET /api/public/v1/messages/{message_id}
 ```
 
-and fetches conversation messages with:
+and fetches conversation messages with Nairi's [list messages](https://nairi.ai/docs/api/conversations/list-messages) endpoint:
 
 ```http
 GET /api/public/v1/conversations/{job_id}/messages
@@ -138,11 +138,6 @@ Then reload pi:
 ```text
 /reload
 ```
-
-## Security notes
-
-- Do not commit `NAIRI_API_KEY`.
-- The extension does not upload binary/image files; image content in pi messages is replaced with a text placeholder.
 
 ## License
 
