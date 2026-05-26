@@ -63,6 +63,7 @@ interface ProgressState {
 	answerText: string;
 	showedProgressHeader: boolean;
 	showedResponseHeader: boolean;
+	lastMessageStatus?: string;
 }
 
 let currentSessionKey = `ephemeral:${Date.now()}`;
@@ -264,6 +265,11 @@ async function waitForTurn(
 	while (true) {
 		throwIfAborted(signal);
 		const status = await getMessage(turn.messageId, apiKey, signal);
+		const statusDelta = messageStatusDelta(status.status, progressState);
+		if (statusDelta) {
+			onTextDelta(statusDelta);
+		}
+
 		const messages = await listMessages(turn.jobId, apiKey, signal);
 		emitProgressMessages(messages, turn.messageId, progressState, onTextDelta);
 
@@ -290,6 +296,32 @@ function createProgressState(): ProgressState {
 		showedProgressHeader: false,
 		showedResponseHeader: false,
 	};
+}
+
+function messageStatusDelta(status: string, progressState: ProgressState): string {
+	if (progressState.lastMessageStatus === status) {
+		return "";
+	}
+
+	progressState.lastMessageStatus = status;
+	if (status === "queued") {
+		return progressFormattedDelta(quoteProgressLine("queued: Nairi agent is busy; your message is waiting"), progressState);
+	}
+
+	if (status === "pending") {
+		return progressFormattedDelta(quoteProgressLine("pending: Nairi agent is working"), progressState);
+	}
+
+	return "";
+}
+
+function progressFormattedDelta(formatted: string, progressState: ProgressState): string {
+	if (progressState.showedProgressHeader) {
+		return `\n${formatted}\n`;
+	}
+
+	progressState.showedProgressHeader = true;
+	return `\n\n${formatted}\n`;
 }
 
 function emitProgressMessages(
@@ -335,12 +367,7 @@ function progressDelta(data: unknown, rawContent: string, progressState: Progres
 		return "";
 	}
 
-	if (progressState.showedProgressHeader) {
-		return `\n${formatted}\n`;
-	}
-
-	progressState.showedProgressHeader = true;
-	return `\n\n${formatted}\n`;
+	return progressFormattedDelta(formatted, progressState);
 }
 
 function answerDeltaWithHeader(delta: string, progressState: ProgressState): string {
