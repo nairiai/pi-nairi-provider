@@ -10,6 +10,7 @@ This extension discovers your deployed [Nairi](https://nairi.ai) agents, registe
 - Lists deployed Nairi agents as selectable models
 - Starts and continues Nairi API conversations
 - Uploads pi image/file attachments to Nairi and sends their `attachment_ids` with each prompt
+- Downloads attachments returned by Nairi into a local temp directory and links them in pi
 - Streams assistant text back into pi
 - Shows Nairi progress messages while the agent works
 - Persists the Nairi `job_id` per pi session and agent
@@ -121,6 +122,17 @@ What is shown in this screenshot?
 
 Nairi currently allows up to 10 attachments per message and up to 50 MB per attachment. Extra or oversized attachments are omitted and a notice is appended to the prompt.
 
+### Receive attachments
+
+If the Nairi agent returns files, its assistant message includes `attachment_ids`. The provider downloads those attachments with `GET /api/public/v1/attachments/{id}`, stores them under `/tmp/pi-nairi-provider-attachments`, and appends a small attachment section to the pi response.
+
+Example output in pi:
+
+```text
+📎 Nairi attachments:
+- report.pdf saved to `/tmp/pi-nairi-provider-attachments/job_.../cmsg_.../att_...-report.pdf`
+```
+
 ### Reset the remote conversation
 
 The extension keeps a Nairi conversation per pi session and model. To start fresh for the active Nairi model:
@@ -150,6 +162,8 @@ For follow-up prompts, it calls Nairi's [continue conversation](https://nairi.ai
 ```http
 POST /api/public/v1/conversations/{job_id}/continue
 ```
+
+If Nairi returns attachment IDs on assistant messages, it downloads them using Nairi's [get attachment](https://nairi.ai/docs/api/attachments/get) endpoint and appends local file paths to the pi response.
 
 It polls the current user message with Nairi's [message status endpoint](https://nairi.ai/docs/api/conversations/message-reference):
 

@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, isAbsolute, resolve } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
@@ -25,6 +25,7 @@ const DEFAULT_MAX_TOKENS = 16_384;
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const API_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_FILE_ATTACHMENT_BYTES = API_MAX_ATTACHMENT_BYTES;
+const DOWNLOAD_ROOT = join("/tmp", "pi-nairi-provider-attachments");
 
 interface NairiAgent {
 	id: string;
@@ -72,6 +73,19 @@ interface NairiAttachmentUpload {
 	bytes: Uint8Array;
 	mimeType?: string;
 	source: string;
+}
+
+interface NairiAttachmentDownload {
+	id: string;
+	filename: string;
+	data: string;
+}
+
+interface DownloadedAttachment {
+	id: string;
+	filename: string;
+	path?: string;
+	error?: string;
 }
 
 interface ProgressState {
@@ -175,6 +189,12 @@ export default async function (pi: ExtensionAPI) {
 				const missingText = missingFinalText(progressState.answerText, finalText);
 				if (missingText) {
 					textIndex = appendText(stream, output, textIndex, answerDeltaWithHeader(missingText, progressState));
+				}
+
+				const downloadedAttachments = await downloadResponseAttachments(finalMessages, turn, apiKey, options?.signal);
+				const attachmentText = formatDownloadedAttachments(downloadedAttachments);
+				if (attachmentText) {
+					textIndex = appendText(stream, output, textIndex, attachmentText);
 				}
 
 				finishTextBlock(stream, output, textIndex);
@@ -629,6 +649,119 @@ async function getMessage(messageId: string, apiKey: string, signal?: AbortSigna
 	}
 
 	throw new Error("Unexpected Nairi message response.");
+}
+
+async function getAttachment(attachmentId: string, apiKey: string, signal?: AbortSignal): Promise<NairiAttachmentDownload> {
+	const encodedAttachmentId = encodeURIComponent(attachmentId);
+	const data = await apiRequest("GET", `/attachments/${encodedAttachmentId}`, undefined, apiKey, signal);
+	return requireAttachmentDownload(data);
+}
+
+async function downloadResponseAttachments(
+	messages: NairiMessage[],
+	turn: TurnStart,
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<DownloadedAttachment[]> {
+	const references = responseAttachmentReferences(messages, turn.messageId);
+	const downloads: DownloadedAttachment[] = [];
+	for (const reference of references) {
+		downloads.push(await downloadResponseAttachment(reference.attachmentId, turn.jobId, reference.messageId, apiKey, signal));
+	}
+
+	return downloads;
+}
+
+interface ResponseAttachmentReference {
+	messageId: string;
+	attachmentId: string;
+}
+
+function responseAttachmentReferences(messages: NairiMessage[], userMessageId: string): ResponseAttachmentReference[] {
+	const references: ResponseAttachmentReference[] = [];
+	const seen = new Set<string>();
+	for (const message of messagesAfter(messages, userMessageId)) {
+		if (message.role !== "assistant" && message.role !== "system") {
+			continue;
+		}
+
+		for (const attachmentId of message.attachment_ids ?? []) {
+			if (seen.has(attachmentId)) {
+				continue;
+			}
+
+			seen.add(attachmentId);
+			references.push({ messageId: message.id, attachmentId });
+		}
+	}
+
+	return references;
+}
+
+async function downloadResponseAttachment(
+	attachmentId: string,
+	jobId: string,
+	messageId: string,
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<DownloadedAttachment> {
+	try {
+		const attachment = await getAttachment(attachmentId, apiKey, signal);
+		const filename = safeFilename(attachment.filename || `${attachment.id}.bin`);
+		const directory = join(DOWNLOAD_ROOT, safePathSegment(jobId), safePathSegment(messageId));
+		await mkdir(directory, { recursive: true });
+		const path = join(directory, `${safePathSegment(attachment.id)}-${filename}`);
+		await writeFile(path, Buffer.from(attachment.data, "base64"));
+		return { id: attachment.id, filename, path };
+	} catch (error) {
+		return { id: attachmentId, filename: attachmentId, error: errorMessage(error) };
+	}
+}
+
+function formatDownloadedAttachments(attachments: DownloadedAttachment[]): string {
+	if (attachments.length === 0) {
+		return "";
+	}
+
+	const lines = ["", "", "📎 Nairi attachments:"];
+	for (const attachment of attachments) {
+		if (attachment.path) {
+			lines.push(`- ${escapeMarkdown(attachment.filename)} saved to \`${attachment.path}\``);
+			continue;
+		}
+
+		lines.push(`- ${escapeMarkdown(attachment.filename)} failed to download: ${escapeMarkdown(attachment.error ?? "unknown error")}`);
+	}
+
+	return lines.join("\n");
+}
+
+function safeFilename(filename: string): string {
+	const base = basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+	if (base && base !== "." && base !== "..") {
+		return base;
+	}
+
+	return "attachment.bin";
+}
+
+function safePathSegment(value: string): string {
+	return value.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function requireAttachmentDownload(data: unknown): NairiAttachmentDownload {
+	if (!isRecord(data)) {
+		throw new Error("Unexpected Nairi attachment response.");
+	}
+
+	const id = data.id;
+	const filename = data.filename;
+	const attachmentData = data.data;
+	if (typeof id === "string" && typeof filename === "string" && typeof attachmentData === "string") {
+		return { id, filename, data: attachmentData };
+	}
+
+	throw new Error("Unexpected Nairi attachment response.");
 }
 
 async function listMessages(jobId: string, apiKey: string, signal?: AbortSignal): Promise<NairiMessage[]> {
@@ -1128,8 +1261,21 @@ function isNairiMessage(value: unknown): value is NairiMessage {
 		typeof value.job_id === "string" &&
 		typeof value.content === "string" &&
 		typeof value.role === "string" &&
-		typeof value.status === "string"
+		typeof value.status === "string" &&
+		isOptionalStringArray(value.attachment_ids)
 	);
+}
+
+function isOptionalStringArray(value: unknown): value is string[] | undefined {
+	if (value === undefined) {
+		return true;
+	}
+
+	if (!Array.isArray(value)) {
+		return false;
+	}
+
+	return value.every((item) => typeof item === "string");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
