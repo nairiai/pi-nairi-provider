@@ -47,8 +47,14 @@ interface NairiMessage {
 	role: string;
 	status: string;
 	attachment_ids?: string[];
-	created_at?: string;
-	updated_at?: string;
+	created_at?: string | null;
+	updated_at?: string | null;
+	model?: string | null;
+	input_tokens?: number | null;
+	output_tokens?: number | null;
+	cache_read_tokens?: number | null;
+	cache_write_tokens?: number | null;
+	cost_usd?: number | null;
 }
 
 interface NairiProviderState {
@@ -186,6 +192,9 @@ export default async function (pi: ExtensionAPI) {
 				const finalMessages = await waitForTurn(turn, apiKey, options?.signal, (delta) => {
 					textIndex = appendText(stream, output, textIndex, delta);
 				}, progressState, stream, output);
+
+				const finalAssistant = completedAssistantAfter(finalMessages, turn.messageId);
+				applyNairiUsage(output, finalAssistant);
 
 				const finalText = assistantTextAfter(finalMessages, turn.messageId);
 				const missingText = missingFinalText(progressState.answerText, finalText);
@@ -1254,9 +1263,52 @@ function assistantTextAfter(messages: NairiMessage[], userMessageId: string): st
 	return parts.join("\n\n").trim();
 }
 
-function hasCompletedAssistantAfter(messages: NairiMessage[], userMessageId: string): boolean {
+function applyNairiUsage(output: AssistantMessage, message: NairiMessage | undefined): void {
+	if (!message) {
+		return;
+	}
+
+	output.responseId = message.id;
+	if (message.model) {
+		output.responseModel = message.model;
+	}
+
+	const input = message.input_tokens ?? 0;
+	const outputTokens = message.output_tokens ?? 0;
+	const cacheRead = message.cache_read_tokens ?? 0;
+	const cacheWrite = message.cache_write_tokens ?? 0;
+	const totalCost = message.cost_usd ?? 0;
+
+	output.usage = {
+		input,
+		output: outputTokens,
+		cacheRead,
+		cacheWrite,
+		totalTokens: input + outputTokens + cacheRead + cacheWrite,
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: totalCost,
+		},
+	};
+}
+
+function completedAssistantAfter(messages: NairiMessage[], userMessageId: string): NairiMessage | undefined {
 	const relevant = messagesAfter(messages, userMessageId);
-	return relevant.some((message) => message.role === "assistant" && message.status === "completed" && message.content.length > 0);
+	for (let index = relevant.length - 1; index >= 0; index -= 1) {
+		const message = relevant[index];
+		if (message.role === "assistant" && message.status === "completed") {
+			return message;
+		}
+	}
+
+	return undefined;
+}
+
+function hasCompletedAssistantAfter(messages: NairiMessage[], userMessageId: string): boolean {
+	return completedAssistantAfter(messages, userMessageId) !== undefined;
 }
 
 function messagesAfter(messages: NairiMessage[], messageId: string): NairiMessage[] {
@@ -1380,8 +1432,24 @@ function isNairiMessage(value: unknown): value is NairiMessage {
 		typeof value.content === "string" &&
 		typeof value.role === "string" &&
 		typeof value.status === "string" &&
-		isOptionalStringArray(value.attachment_ids)
+		isOptionalStringArray(value.attachment_ids) &&
+		isOptionalString(value.created_at) &&
+		isOptionalString(value.updated_at) &&
+		isOptionalString(value.model) &&
+		isOptionalNumber(value.input_tokens) &&
+		isOptionalNumber(value.output_tokens) &&
+		isOptionalNumber(value.cache_read_tokens) &&
+		isOptionalNumber(value.cache_write_tokens) &&
+		isOptionalNumber(value.cost_usd)
 	);
+}
+
+function isOptionalString(value: unknown): value is string | null | undefined {
+	return value === undefined || value === null || typeof value === "string";
+}
+
+function isOptionalNumber(value: unknown): value is number | null | undefined {
+	return value === undefined || value === null || (typeof value === "number" && Number.isFinite(value));
 }
 
 function isOptionalStringArray(value: unknown): value is string[] | undefined {
