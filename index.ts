@@ -25,7 +25,7 @@ const DEFAULT_MAX_TOKENS = 16_384;
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const API_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_FILE_ATTACHMENT_BYTES = API_MAX_ATTACHMENT_BYTES;
-const DOWNLOAD_ROOT = join("/tmp", "pi-nairi-provider-attachments");
+const DOWNLOAD_ROOT = join("/tmp", "nairi");
 
 interface NairiAgent {
 	id: string;
@@ -708,9 +708,9 @@ async function downloadResponseAttachment(
 	try {
 		const attachment = await getAttachment(attachmentId, apiKey, signal);
 		const filename = safeFilename(attachment.filename || `${attachment.id}.bin`);
-		const directory = join(DOWNLOAD_ROOT, safePathSegment(jobId), safePathSegment(messageId));
+		const directory = DOWNLOAD_ROOT;
 		await mkdir(directory, { recursive: true });
-		const path = join(directory, `${safePathSegment(attachment.id)}-${filename}`);
+		const path = join(directory, filename);
 		await writeFile(path, Buffer.from(attachment.data, "base64"));
 		return { id: attachment.id, filename, path };
 	} catch (error) {
@@ -743,10 +743,6 @@ function safeFilename(filename: string): string {
 	}
 
 	return "attachment.bin";
-}
-
-function safePathSegment(value: string): string {
-	return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function requireAttachmentDownload(data: unknown): NairiAttachmentDownload {

@@ -124,13 +124,13 @@ Nairi currently allows up to 10 attachments per message and up to 50 MB per atta
 
 ### Receive attachments
 
-If the Nairi agent returns files, its assistant message includes `attachment_ids`. The provider downloads those attachments with `GET /api/public/v1/attachments/{id}`, stores them under `/tmp/pi-nairi-provider-attachments`, and appends a small attachment section to the pi response.
+If the Nairi agent returns files, its assistant message includes `attachment_ids`. The provider downloads those attachments with `GET /api/public/v1/attachments/{id}`, stores them under `/tmp/nairi`, and appends a small attachment section to the pi response.
 
 Example output in pi:
 
 ```text
 📎 Nairi attachments:
-- report.pdf saved to `/tmp/pi-nairi-provider-attachments/job_.../cmsg_.../att_...-report.pdf`
+- report.pdf saved to `/tmp/nairi/report.pdf`
 ```
 
 ### Reset the remote conversation
