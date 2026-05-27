@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
 	type Api,
@@ -98,6 +98,7 @@ interface ProgressState {
 
 let currentSessionKey = `ephemeral:${Date.now()}`;
 let currentCwd = process.cwd();
+let currentUi: ExtensionUIContext | undefined;
 let startupWarning: string | undefined;
 const jobsBySessionAgent = new Map<string, string>();
 
@@ -116,6 +117,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		currentSessionKey = ctx.sessionManager.getSessionFile() ?? `ephemeral:${Date.now()}`;
 		currentCwd = ctx.cwd;
+		currentUi = ctx.ui;
 		restoreSessionState(ctx.sessionManager.getBranch());
 
 		if (startupWarning) {
@@ -201,6 +203,7 @@ export default async function (pi: ExtensionAPI) {
 				stream.push({ type: "done", reason: "stop", message: output });
 				stream.end();
 			} catch (error) {
+				clearNairiStatus();
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				output.errorMessage = errorMessage(error);
 				const reason: "aborted" | "error" = output.stopReason === "aborted" ? "aborted" : "error";
@@ -303,23 +306,23 @@ async function waitForTurn(
 	while (true) {
 		throwIfAborted(signal);
 		const status = await getMessage(turn.messageId, apiKey, signal);
-		const statusDelta = messageStatusDelta(status.status, progressState);
-		if (statusDelta) {
-			onTextDelta(statusDelta);
-		}
+		updateNairiStatus(status.status, progressState);
 
 		const messages = await listMessages(turn.jobId, apiKey, signal);
 		emitProgressMessages(messages, turn.messageId, progressState, onTextDelta);
 
 		if (hasCompletedAssistantAfter(messages, turn.messageId)) {
+			clearNairiStatus();
 			return messages;
 		}
 
 		if (status.status === "completed") {
+			clearNairiStatus();
 			return messages;
 		}
 
 		if (status.status === "failed") {
+			clearNairiStatus();
 			throw new Error(systemErrorText(messages) ?? `Nairi message ${turn.messageId} failed.`);
 		}
 
@@ -336,21 +339,22 @@ function createProgressState(): ProgressState {
 	};
 }
 
-function messageStatusDelta(status: string, progressState: ProgressState): string {
+function updateNairiStatus(status: string, progressState: ProgressState): void {
 	if (progressState.lastMessageStatus === status) {
-		return "";
+		return;
 	}
 
 	progressState.lastMessageStatus = status;
 	if (status === "queued") {
-		return progressFormattedDelta(quoteProgressLine("queued: Nairi agent is busy; your message is waiting"), progressState);
+		currentUi?.setStatus("nairi", "Nairi queued");
+		return;
 	}
 
-	if (status === "pending") {
-		return progressFormattedDelta(quoteProgressLine("pending: Nairi agent is working"), progressState);
-	}
+	clearNairiStatus();
+}
 
-	return "";
+function clearNairiStatus(): void {
+	currentUi?.setStatus("nairi", undefined);
 }
 
 function progressFormattedDelta(formatted: string, progressState: ProgressState): string {
