@@ -13,7 +13,7 @@ This extension discovers your deployed [Nairi](https://nairi.ai) agents, registe
 - Downloads attachments returned by Nairi into a local temp directory and links them in pi
 - Streams assistant text back into pi
 - Shows Nairi progress messages while the agent works
-- Shows queued state as transient pi UI instead of adding it to the assistant message
+- Shows queued state as transient pi UI while keeping it out of the final assistant message
 - Persists the Nairi `job_id` per pi session and agent
 - Supports `/nairi-reset` to start a fresh Nairi conversation
 - Blocks pi fork/tree navigation for Nairi sessions to avoid mismatched remote conversation state

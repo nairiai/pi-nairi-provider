@@ -93,6 +93,8 @@ interface ProgressState {
 	answerText: string;
 	showedProgressHeader: boolean;
 	showedResponseHeader: boolean;
+	queuedTextVisible: boolean;
+	queuedTextIndex?: number;
 	lastMessageStatus?: string;
 }
 
@@ -185,7 +187,7 @@ export default async function (pi: ExtensionAPI) {
 				const progressState = createProgressState();
 				const finalMessages = await waitForTurn(turn, apiKey, options?.signal, (delta) => {
 					textIndex = appendText(stream, output, textIndex, delta);
-				}, progressState);
+				}, progressState, stream, output);
 
 				const finalText = assistantTextAfter(finalMessages, turn.messageId);
 				const missingText = missingFinalText(progressState.answerText, finalText);
@@ -200,10 +202,12 @@ export default async function (pi: ExtensionAPI) {
 				}
 
 				finishTextBlock(stream, output, textIndex);
+				removeEmptyTextBlocks(output);
 				stream.push({ type: "done", reason: "stop", message: output });
 				stream.end();
 			} catch (error) {
 				clearNairiStatus();
+				removeEmptyTextBlocks(output);
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				output.errorMessage = errorMessage(error);
 				const reason: "aborted" | "error" = output.stopReason === "aborted" ? "aborted" : "error";
@@ -302,27 +306,29 @@ async function waitForTurn(
 	signal: AbortSignal | undefined,
 	onTextDelta: (delta: string) => void,
 	progressState: ProgressState,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
 ): Promise<NairiMessage[]> {
 	while (true) {
 		throwIfAborted(signal);
 		const status = await getMessage(turn.messageId, apiKey, signal);
-		updateNairiStatus(status.status, progressState);
+		updateNairiStatus(status.status, progressState, stream, output);
 
 		const messages = await listMessages(turn.jobId, apiKey, signal);
 		emitProgressMessages(messages, turn.messageId, progressState, onTextDelta);
 
 		if (hasCompletedAssistantAfter(messages, turn.messageId)) {
-			clearNairiStatus();
+			clearNairiStatus(progressState, stream, output);
 			return messages;
 		}
 
 		if (status.status === "completed") {
-			clearNairiStatus();
+			clearNairiStatus(progressState, stream, output);
 			return messages;
 		}
 
 		if (status.status === "failed") {
-			clearNairiStatus();
+			clearNairiStatus(progressState, stream, output);
 			throw new Error(systemErrorText(messages) ?? `Nairi message ${turn.messageId} failed.`);
 		}
 
@@ -336,27 +342,83 @@ function createProgressState(): ProgressState {
 		answerText: "",
 		showedProgressHeader: false,
 		showedResponseHeader: false,
+		queuedTextVisible: false,
 	};
 }
 
-function updateNairiStatus(status: string, progressState: ProgressState): void {
+function updateNairiStatus(
+	status: string,
+	progressState: ProgressState,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+): void {
 	if (progressState.lastMessageStatus === status) {
 		return;
 	}
 
 	progressState.lastMessageStatus = status;
 	if (status === "queued") {
-		currentUi?.setStatus("nairi", "Nairi queued");
-		currentUi?.setWidget("nairi-status", ["Nairi queued: waiting for an available agent"], { placement: "aboveEditor" });
+		showNairiQueuedStatus(progressState, stream, output);
 		return;
 	}
 
-	clearNairiStatus();
+	clearNairiStatus(progressState, stream, output);
 }
 
-function clearNairiStatus(): void {
+function showNairiQueuedStatus(
+	progressState: ProgressState,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+): void {
+	currentUi?.setStatus("nairi", "Nairi queued");
+	currentUi?.setWidget("nairi-status", ["Nairi queued: waiting for an available agent"], { placement: "aboveEditor" });
+	if (progressState.queuedTextVisible) {
+		return;
+	}
+
+	let index = progressState.queuedTextIndex;
+	if (index === undefined) {
+		output.content.push({ type: "text", text: "" });
+		index = output.content.length - 1;
+		progressState.queuedTextIndex = index;
+		stream.push({ type: "text_start", contentIndex: index, partial: output });
+	}
+
+	const block = output.content[index];
+	if (block?.type !== "text") {
+		return;
+	}
+
+	const text = "⏳ Nairi queued: waiting for an available agent\n";
+	block.text = text;
+	progressState.queuedTextVisible = true;
+	stream.push({ type: "text_delta", contentIndex: index, delta: text, partial: output });
+}
+
+function clearNairiStatus(
+	progressState?: ProgressState,
+	stream?: AssistantMessageEventStream,
+	output?: AssistantMessage,
+): void {
 	currentUi?.setStatus("nairi", undefined);
 	currentUi?.setWidget("nairi-status", undefined);
+	if (!progressState?.queuedTextVisible || !stream || !output) {
+		return;
+	}
+
+	const index = progressState.queuedTextIndex;
+	if (index === undefined) {
+		return;
+	}
+
+	const block = output.content[index];
+	if (block?.type !== "text") {
+		return;
+	}
+
+	block.text = "";
+	progressState.queuedTextVisible = false;
+	stream.push({ type: "text_delta", contentIndex: index, delta: "", partial: output });
 }
 
 function progressFormattedDelta(formatted: string, progressState: ProgressState): string {
@@ -575,6 +637,10 @@ function textBlockText(output: AssistantMessage, textIndex: number | undefined):
 	}
 
 	return block.text;
+}
+
+function removeEmptyTextBlocks(output: AssistantMessage): void {
+	output.content = output.content.filter((block) => block.type !== "text" || block.text.length > 0);
 }
 
 function missingFinalText(currentText: string, finalText: string): string {
