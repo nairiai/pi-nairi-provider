@@ -99,6 +99,7 @@ Attachments are uploaded first with `POST /api/public/v1/attachments`, then refe
 Supported inputs:
 
 - images attached to the pi user message
+- clipboard image paths inserted by pi/terminals, such as `/tmp/pi-clipboard-....png` or other absolute `*clipboard*.png`/`.jpg`/`.webp`/`.gif` paths
 - local files referenced in the prompt as `@path`, `@"path with spaces"`, or `@'path with spaces'`
 
 Examples:

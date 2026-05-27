@@ -1030,7 +1030,7 @@ interface FileReferenceAttachments {
 }
 
 async function fileReferenceAttachments(prompt: string): Promise<FileReferenceAttachments> {
-	const references = findFileReferences(prompt);
+	const references = [...findFileReferences(prompt), ...findClipboardImageReferences(prompt)];
 	if (references.length === 0) {
 		return { attachments: [], notices: [] };
 	}
@@ -1080,6 +1080,7 @@ async function fileReferenceAttachment(reference: string, absolutePath: string):
 			attachment: {
 				filename: basename(absolutePath),
 				bytes: new Uint8Array(content),
+				mimeType: mimeTypeForFilename(absolutePath),
 				source: reference,
 			},
 		};
@@ -1136,8 +1137,63 @@ function findFileReferences(prompt: string): string[] {
 	return references;
 }
 
+function findClipboardImageReferences(prompt: string): string[] {
+	const references: string[] = [];
+	const regex = /(^|\s)(?:"([^"]+)"|'([^']+)'|(\S+))/g;
+	let match: RegExpExecArray | null;
+	while ((match = regex.exec(prompt)) !== null) {
+		const rawPath = match[2] ?? match[3] ?? match[4];
+		if (!rawPath) {
+			continue;
+		}
+
+		const filePath = trimTrailingPunctuation(rawPath);
+		if (!isClipboardImageReference(filePath)) {
+			continue;
+		}
+
+		references.push(filePath);
+	}
+
+	return references;
+}
+
+function isClipboardImageReference(reference: string): boolean {
+	const expanded = expandHome(reference);
+	if (!isAbsolute(expanded)) {
+		return false;
+	}
+
+	if (!mimeTypeForFilename(expanded)?.startsWith("image/")) {
+		return false;
+	}
+
+	return expanded.toLowerCase().includes("clipboard");
+}
+
 function trimTrailingPunctuation(value: string): string {
 	return value.replace(/[),.;:!?]+$/g, "");
+}
+
+function mimeTypeForFilename(filename: string): string | undefined {
+	const lower = filename.toLowerCase();
+	if (lower.endsWith(".png")) {
+		return "image/png";
+	}
+
+	if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+		return "image/jpeg";
+	}
+
+	if (lower.endsWith(".webp")) {
+		return "image/webp";
+	}
+
+	if (lower.endsWith(".gif")) {
+		return "image/gif";
+	}
+
+	return undefined;
 }
 
 function resolveReferencePath(reference: string): string {
