@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
@@ -22,7 +22,9 @@ const STATE_TYPE = "nairi-provider-state";
 const POLL_INTERVAL_MS = 2_000;
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 16_384;
-const DEFAULT_MAX_FILE_ATTACHMENT_BYTES = 200_000;
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const API_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const DEFAULT_MAX_FILE_ATTACHMENT_BYTES = API_MAX_ATTACHMENT_BYTES;
 
 interface NairiAgent {
 	id: string;
@@ -43,6 +45,7 @@ interface NairiMessage {
 	content: string;
 	role: string;
 	status: string;
+	attachment_ids?: string[];
 	created_at?: string;
 	updated_at?: string;
 }
@@ -56,6 +59,19 @@ interface NairiProviderState {
 interface TurnStart {
 	jobId: string;
 	messageId: string;
+}
+
+interface NairiUserInput {
+	prompt: string;
+	attachments: NairiAttachmentUpload[];
+	notices: string[];
+}
+
+interface NairiAttachmentUpload {
+	filename: string;
+	bytes: Uint8Array;
+	mimeType?: string;
+	source: string;
 }
 
 interface ProgressState {
@@ -141,9 +157,9 @@ export default async function (pi: ExtensionAPI) {
 					throw new Error("Set NAIRI_API_KEY and run /reload so the Nairi extension can list agents.");
 				}
 
-				const prompt = await latestUserPrompt(context.messages);
+				const input = await latestUserInput(context.messages);
 				const apiKey = resolveApiKey(options);
-				const turn = await sendTurn(model.id, prompt, apiKey, options?.signal);
+				const turn = await sendTurn(model.id, input, apiKey, options?.signal);
 				pi.appendEntry<NairiProviderState>(STATE_TYPE, {
 					agentId: model.id,
 					jobId: turn.jobId,
@@ -200,7 +216,7 @@ function agentToModel(agent: NairiAgent): ProviderModelConfig {
 		name: `Nairi: ${agent.name}`,
 		api: API,
 		reasoning: false,
-		input: ["text"],
+		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: DEFAULT_CONTEXT_WINDOW,
 		maxTokens: DEFAULT_MAX_TOKENS,
@@ -213,7 +229,7 @@ function placeholderModel(name: string): ProviderModelConfig {
 		name,
 		api: API,
 		reasoning: false,
-		input: ["text"],
+		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 8_192,
 		maxTokens: 1_024,
@@ -240,17 +256,19 @@ function createEmptyAssistantMessage(model: Model<Api>): AssistantMessage {
 	};
 }
 
-async function sendTurn(agentId: string, prompt: string, apiKey: string, signal?: AbortSignal): Promise<TurnStart> {
+async function sendTurn(agentId: string, input: NairiUserInput, apiKey: string, signal?: AbortSignal): Promise<TurnStart> {
+	const attachmentIds = await uploadAttachments(input.attachments, apiKey, signal);
+	const prompt = promptWithNotices(input.prompt, input.notices);
 	const key = jobKey(currentSessionKey, agentId);
 	const existingJobId = jobsBySessionAgent.get(key);
 	if (existingJobId) {
-		const continued = await continueConversation(existingJobId, prompt, apiKey, signal);
+		const continued = await continueConversation(existingJobId, prompt, attachmentIds, apiKey, signal);
 		const jobId = continued.job_id || existingJobId;
 		jobsBySessionAgent.set(key, jobId);
 		return { jobId, messageId: continued.message_id };
 	}
 
-	const started = await startConversation(agentId, prompt, apiKey, signal);
+	const started = await startConversation(agentId, prompt, attachmentIds, apiKey, signal);
 	jobsBySessionAgent.set(key, started.job_id);
 	return { jobId: started.job_id, messageId: started.message_id };
 }
@@ -571,21 +589,35 @@ async function listAgents(apiKey: string): Promise<NairiAgent[]> {
 async function startConversation(
 	agentId: string,
 	prompt: string,
+	attachmentIds: string[],
 	apiKey: string,
 	signal?: AbortSignal,
 ): Promise<NairiTurnResponse> {
-	const data = await apiRequest("POST", "/conversations/start", { agent_id: agentId, prompt, ask_mode: false }, apiKey, signal);
+	const data = await apiRequest(
+		"POST",
+		"/conversations/start",
+		conversationRequestBody({ agent_id: agentId, prompt, ask_mode: false }, attachmentIds),
+		apiKey,
+		signal,
+	);
 	return requireTurnResponse(data, "start");
 }
 
 async function continueConversation(
 	jobId: string,
 	prompt: string,
+	attachmentIds: string[],
 	apiKey: string,
 	signal?: AbortSignal,
 ): Promise<NairiTurnResponse> {
 	const encodedJobId = encodeURIComponent(jobId);
-	const data = await apiRequest("POST", `/conversations/${encodedJobId}/continue`, { prompt }, apiKey, signal);
+	const data = await apiRequest(
+		"POST",
+		`/conversations/${encodedJobId}/continue`,
+		conversationRequestBody({ prompt }, attachmentIds),
+		apiKey,
+		signal,
+	);
 	return requireTurnResponse(data, "continue");
 }
 
@@ -618,6 +650,59 @@ async function listMessages(jobId: string, apiKey: string, signal?: AbortSignal)
 		}
 	}
 	return messages;
+}
+
+function conversationRequestBody(body: Record<string, unknown>, attachmentIds: string[]): Record<string, unknown> {
+	if (attachmentIds.length === 0) {
+		return body;
+	}
+
+	return { ...body, attachment_ids: attachmentIds };
+}
+
+async function uploadAttachments(
+	attachments: NairiAttachmentUpload[],
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	const attachmentIds: string[] = [];
+	for (const attachment of attachments) {
+		attachmentIds.push(await uploadAttachment(attachment, apiKey, signal));
+	}
+
+	return attachmentIds;
+}
+
+async function uploadAttachment(attachment: NairiAttachmentUpload, apiKey: string, signal?: AbortSignal): Promise<string> {
+	const form = new FormData();
+	form.append("file", new Blob([arrayBufferFromBytes(attachment.bytes)], { type: attachment.mimeType }), attachment.filename);
+	const response = await fetch(`${normalizeBaseUrl()}/attachments`, {
+		method: "POST",
+		headers: { Authorization: `Bearer ${apiKey}` },
+		body: form,
+		signal,
+	});
+	const text = await response.text();
+	const data = parseJson(text);
+	if (response.ok) {
+		return requireAttachmentUploadResponse(data);
+	}
+
+	throw new Error(`Attachment upload failed for ${attachment.source}: HTTP ${response.status}: ${extractApiError(data)}`);
+}
+
+function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
+	const copy = new Uint8Array(bytes.byteLength);
+	copy.set(bytes);
+	return copy.buffer;
+}
+
+function requireAttachmentUploadResponse(data: unknown): string {
+	if (isRecord(data) && typeof data.attachment_id === "string") {
+		return data.attachment_id;
+	}
+
+	throw new Error("Unexpected Nairi attachment upload response.");
 }
 
 async function apiRequest(
@@ -663,41 +748,100 @@ function requireTurnResponse(data: unknown, label: string): NairiTurnResponse {
 	throw new Error(`Unexpected Nairi ${label} response.`);
 }
 
-async function latestUserPrompt(messages: Message[]): Promise<string> {
+async function latestUserInput(messages: Message[]): Promise<NairiUserInput> {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
 		if (message.role === "user") {
-			return expandFileReferences(await contentToPrompt(message.content));
+			return contentToUserInput(message.content);
 		}
 	}
 
 	throw new Error("No user prompt found in pi context.");
 }
 
-async function contentToPrompt(content: string | (TextContent | ImageContent)[]): Promise<string> {
-	if (typeof content === "string") {
-		return content;
-	}
+async function contentToUserInput(content: string | (TextContent | ImageContent)[]): Promise<NairiUserInput> {
+	const input = typeof content === "string" ? emptyUserInput(content) : userInputFromParts(content);
+	const fileAttachments = await fileReferenceAttachments(input.prompt);
+	return enforceAttachmentLimit({
+		prompt: input.prompt,
+		attachments: [...input.attachments, ...fileAttachments.attachments],
+		notices: [...input.notices, ...fileAttachments.notices],
+	});
+}
 
+function emptyUserInput(prompt: string): NairiUserInput {
+	return { prompt, attachments: [], notices: [] };
+}
+
+function userInputFromParts(content: (TextContent | ImageContent)[]): NairiUserInput {
 	const parts: string[] = [];
+	const attachments: NairiAttachmentUpload[] = [];
+	let imageIndex = 1;
 	for (const item of content) {
 		if (item.type === "text") {
 			parts.push(item.text);
 			continue;
 		}
 
-		parts.push(`[image omitted: ${imageLabel(item)}]`);
+		const attachment = imageAttachment(item, imageIndex);
+		attachments.push(attachment);
+		parts.push(`[image attached: ${attachment.filename}]`);
+		imageIndex += 1;
 	}
-	return parts.join("\n").trim();
+
+	return { prompt: parts.join("\n").trim(), attachments, notices: [] };
 }
 
-async function expandFileReferences(prompt: string): Promise<string> {
-	const references = findFileReferences(prompt);
-	if (references.length === 0) {
-		return prompt;
+function imageAttachment(image: ImageContent, index: number): NairiAttachmentUpload {
+	const mimeType = image.mimeType || "application/octet-stream";
+	return {
+		filename: `pi-image-${index}.${extensionForMimeType(mimeType)}`,
+		bytes: decodeBase64Image(image.data),
+		mimeType,
+		source: `image ${index}`,
+	};
+}
+
+function decodeBase64Image(data: string): Uint8Array {
+	const marker = ";base64,";
+	const markerIndex = data.indexOf(marker);
+	const encoded = markerIndex >= 0 ? data.slice(markerIndex + marker.length) : data;
+	return new Uint8Array(Buffer.from(encoded, "base64"));
+}
+
+function extensionForMimeType(mimeType: string): string {
+	if (mimeType === "image/png") {
+		return "png";
 	}
 
-	const attachments: string[] = [];
+	if (mimeType === "image/jpeg") {
+		return "jpg";
+	}
+
+	if (mimeType === "image/webp") {
+		return "webp";
+	}
+
+	if (mimeType === "image/gif") {
+		return "gif";
+	}
+
+	return "bin";
+}
+
+interface FileReferenceAttachments {
+	attachments: NairiAttachmentUpload[];
+	notices: string[];
+}
+
+async function fileReferenceAttachments(prompt: string): Promise<FileReferenceAttachments> {
+	const references = findFileReferences(prompt);
+	if (references.length === 0) {
+		return { attachments: [], notices: [] };
+	}
+
+	const attachments: NairiAttachmentUpload[] = [];
+	const notices: string[] = [];
 	const seenPaths = new Set<string>();
 	for (const reference of references) {
 		const absolutePath = resolveReferencePath(reference);
@@ -706,17 +850,76 @@ async function expandFileReferences(prompt: string): Promise<string> {
 		}
 
 		seenPaths.add(absolutePath);
-		const attachment = await readFileAttachment(reference, absolutePath);
-		if (attachment) {
-			attachments.push(attachment);
+		const attachment = await fileReferenceAttachment(reference, absolutePath);
+		if (attachment.attachment) {
+			attachments.push(attachment.attachment);
+		}
+
+		if (attachment.notice) {
+			notices.push(attachment.notice);
 		}
 	}
 
-	if (attachments.length === 0) {
+	return { attachments, notices };
+}
+
+interface FileReferenceAttachmentResult {
+	attachment?: NairiAttachmentUpload;
+	notice?: string;
+}
+
+async function fileReferenceAttachment(reference: string, absolutePath: string): Promise<FileReferenceAttachmentResult> {
+	try {
+		const metadata = await stat(absolutePath);
+		if (!metadata.isFile()) {
+			return {};
+		}
+
+		const maxBytes = maxFileAttachmentBytes();
+		if (metadata.size > maxBytes) {
+			return { notice: attachmentNotice(reference, absolutePath, `omitted: file is ${metadata.size} bytes, max is ${maxBytes}`) };
+		}
+
+		const content = await readFile(absolutePath);
+		return {
+			attachment: {
+				filename: basename(absolutePath),
+				bytes: new Uint8Array(content),
+				source: reference,
+			},
+		};
+	} catch {
+		return {};
+	}
+}
+
+function enforceAttachmentLimit(input: NairiUserInput): NairiUserInput {
+	const maxBytes = maxFileAttachmentBytes();
+	const attachments: NairiAttachmentUpload[] = [];
+	const notices = [...input.notices];
+	for (const attachment of input.attachments) {
+		if (attachment.bytes.byteLength > maxBytes) {
+			notices.push(`Attachment omitted: ${attachment.source} (${attachment.filename}); file is ${attachment.bytes.byteLength} bytes, max is ${maxBytes}.`);
+			continue;
+		}
+
+		if (attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+			notices.push(`Attachment omitted: ${attachment.source} (${attachment.filename}); Nairi allows max ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message.`);
+			continue;
+		}
+
+		attachments.push(attachment);
+	}
+
+	return { prompt: input.prompt, attachments, notices };
+}
+
+function promptWithNotices(prompt: string, notices: string[]): string {
+	if (notices.length === 0) {
 		return prompt;
 	}
 
-	return `${prompt}\n\n${attachments.join("\n\n")}`;
+	return `${prompt}\n\n${notices.map((notice) => `[${notice}]`).join("\n")}`;
 }
 
 function findFileReferences(prompt: string): string[] {
@@ -766,29 +969,6 @@ function expandHome(filePath: string): string {
 	return filePath;
 }
 
-async function readFileAttachment(reference: string, absolutePath: string): Promise<string | undefined> {
-	try {
-		const metadata = await stat(absolutePath);
-		if (!metadata.isFile()) {
-			return undefined;
-		}
-
-		const maxBytes = maxFileAttachmentBytes();
-		if (metadata.size > maxBytes) {
-			return fileAttachmentNotice(reference, absolutePath, `omitted: file is ${metadata.size} bytes, max is ${maxBytes}`);
-		}
-
-		const content = await readFile(absolutePath);
-		if (content.includes(0)) {
-			return fileAttachmentNotice(reference, absolutePath, "omitted: binary file");
-		}
-
-		return formatFileAttachment(reference, absolutePath, content.toString("utf8"));
-	} catch {
-		return undefined;
-	}
-}
-
 function maxFileAttachmentBytes(): number {
 	const raw = process.env.NAIRI_MAX_FILE_ATTACHMENT_BYTES;
 	if (!raw) {
@@ -797,36 +977,14 @@ function maxFileAttachmentBytes(): number {
 
 	const parsed = Number.parseInt(raw, 10);
 	if (Number.isFinite(parsed) && parsed > 0) {
-		return parsed;
+		return Math.min(parsed, API_MAX_ATTACHMENT_BYTES);
 	}
 
 	return DEFAULT_MAX_FILE_ATTACHMENT_BYTES;
 }
 
-function formatFileAttachment(reference: string, absolutePath: string, content: string): string {
-	return [
-		`--- BEGIN ATTACHED FILE: ${reference} ---`,
-		`Absolute path: ${absolutePath}`,
-		content,
-		`--- END ATTACHED FILE: ${reference} ---`,
-	].join("\n");
-}
-
-function fileAttachmentNotice(reference: string, absolutePath: string, reason: string): string {
-	return [
-		`--- BEGIN ATTACHED FILE: ${reference} ---`,
-		`Absolute path: ${absolutePath}`,
-		`[${reason}]`,
-		`--- END ATTACHED FILE: ${reference} ---`,
-	].join("\n");
-}
-
-function imageLabel(image: ImageContent): string {
-	if (image.mimeType) {
-		return image.mimeType;
-	}
-
-	return "unsupported by Nairi provider";
+function attachmentNotice(reference: string, absolutePath: string, reason: string): string {
+	return `Attachment ${reference} (${absolutePath}) ${reason}.`;
 }
 
 function assistantTextAfter(messages: NairiMessage[], userMessageId: string): string {

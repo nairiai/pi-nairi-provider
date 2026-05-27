@@ -9,6 +9,7 @@ This extension discovers your deployed [Nairi](https://nairi.ai) agents, registe
 - Registers a `nairi` provider in pi
 - Lists deployed Nairi agents as selectable models
 - Starts and continues Nairi API conversations
+- Uploads pi image/file attachments to Nairi and sends their `attachment_ids` with each prompt
 - Streams assistant text back into pi
 - Shows Nairi progress messages while the agent works
 - Persists the Nairi `job_id` per pi session and agent
@@ -53,11 +54,31 @@ Required. Bearer token used for the Nairi public API.
 export NAIRI_API_KEY="..."
 ```
 
+### `NAIRI_MAX_FILE_ATTACHMENT_BYTES`
+
+Optional. Max size for local `@file` references uploaded as Nairi attachments. Defaults to Nairi's API limit of 50 MB and is capped at 50 MB.
+
+```bash
+export NAIRI_MAX_FILE_ATTACHMENT_BYTES=52428800
+```
+
 ## Usage
 
 ### Select a Nairi model
 
 After install, pi will show models under the `nairi` provider. Each model corresponds to one deployed Nairi agent.
+
+Use pi's model picker, or launch pi directly with an agent slug:
+
+```bash
+pi --provider nairi --model "my-agent"
+```
+
+For example, if your deployed Nairi agent has `agent_id: eksecai/eksecd`:
+
+```bash
+pi --provider nairi --model "eksecai/eksecd"
+```
 
 ### Ask a Nairi agent
 
@@ -67,7 +88,38 @@ Use pi normally after selecting a Nairi model:
 Summarize the current repository and suggest next steps.
 ```
 
-The extension sends only the latest user prompt to Nairi, then polls the Nairi API until the turn completes. Progress messages are rendered in pi as they arrive.
+The extension sends the latest user prompt plus up to 10 attachments to Nairi, then polls the Nairi API until the turn completes. Progress messages are rendered in pi as they arrive.
+
+### Send attachments
+
+Attachments are uploaded first with `POST /api/public/v1/attachments`, then referenced as `attachment_ids` on `conversations/start` or `conversations/{job_id}/continue`.
+
+Supported inputs:
+
+- images attached to the pi user message
+- local files referenced in the prompt as `@path`, `@"path with spaces"`, or `@'path with spaces'`
+
+Examples:
+
+```text
+Review @README.md and suggest improvements.
+```
+
+```text
+Compare @package.json @tsconfig.json and explain the project setup.
+```
+
+```text
+Summarize @"docs/product spec.md".
+```
+
+Attach or paste an image in pi, then ask:
+
+```text
+What is shown in this screenshot?
+```
+
+Nairi currently allows up to 10 attachments per message and up to 50 MB per attachment. Extra or oversized attachments are omitted and a notice is appended to the prompt.
 
 ### Reset the remote conversation
 
@@ -87,7 +139,7 @@ GET /api/public/v1/agents
 
 For each returned agent, it registers a pi model under the `nairi` provider.
 
-For the first prompt in a pi session/model pair, it calls Nairi's [start conversation](https://nairi.ai/docs/api/conversations/start) endpoint:
+Files are uploaded using Nairi's [attachments API](https://nairi.ai/docs/api/attachments), then for the first prompt in a pi session/model pair it calls Nairi's [start conversation](https://nairi.ai/docs/api/conversations/start) endpoint:
 
 ```http
 POST /api/public/v1/conversations/start
