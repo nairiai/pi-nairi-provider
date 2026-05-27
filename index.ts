@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionUIContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
 	type Api,
@@ -100,7 +100,6 @@ interface ProgressState {
 
 let currentSessionKey = `ephemeral:${Date.now()}`;
 let currentCwd = process.cwd();
-let currentUi: ExtensionUIContext | undefined;
 let startupWarning: string | undefined;
 const jobsBySessionAgent = new Map<string, string>();
 
@@ -119,7 +118,6 @@ export default async function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		currentSessionKey = ctx.sessionManager.getSessionFile() ?? `ephemeral:${Date.now()}`;
 		currentCwd = ctx.cwd;
-		currentUi = ctx.ui;
 		restoreSessionState(ctx.sessionManager.getBranch());
 
 		if (startupWarning) {
@@ -370,8 +368,6 @@ function showNairiQueuedStatus(
 	stream: AssistantMessageEventStream,
 	output: AssistantMessage,
 ): void {
-	currentUi?.setStatus("nairi", "Nairi queued");
-	currentUi?.setWidget("nairi-status", ["Nairi queued: waiting for an available agent"], { placement: "aboveEditor" });
 	if (progressState.queuedTextVisible) {
 		return;
 	}
@@ -400,8 +396,6 @@ function clearNairiStatus(
 	stream?: AssistantMessageEventStream,
 	output?: AssistantMessage,
 ): void {
-	currentUi?.setStatus("nairi", undefined);
-	currentUi?.setWidget("nairi-status", undefined);
 	if (!progressState?.queuedTextVisible || !stream || !output) {
 		return;
 	}
