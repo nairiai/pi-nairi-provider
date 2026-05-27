@@ -26,10 +26,10 @@ This extension discovers your deployed [Nairi](https://nairi.ai) agents, registe
 
 ## Install
 
-Clone this repo into your pi extensions directory:
+Install from the pi package gallery / npm:
 
 ```bash
-git clone https://github.com/nairiai/pi-nairi-provider.git ~/.pi/agent/extensions/nairi-provider
+pi install npm:pi-nairi-provider
 ```
 
 Set your API key in the environment where pi starts:
