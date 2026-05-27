@@ -347,6 +347,7 @@ function updateNairiStatus(status: string, progressState: ProgressState): void {
 	progressState.lastMessageStatus = status;
 	if (status === "queued") {
 		currentUi?.setStatus("nairi", "Nairi queued");
+		currentUi?.setWidget("nairi-status", ["Nairi queued: waiting for an available agent"], { placement: "aboveEditor" });
 		return;
 	}
 
@@ -355,6 +356,7 @@ function updateNairiStatus(status: string, progressState: ProgressState): void {
 
 function clearNairiStatus(): void {
 	currentUi?.setStatus("nairi", undefined);
+	currentUi?.setWidget("nairi-status", undefined);
 }
 
 function progressFormattedDelta(formatted: string, progressState: ProgressState): string {
